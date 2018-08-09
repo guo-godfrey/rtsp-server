@@ -29,10 +29,10 @@ bool publishRTSPSession(std::vector<int> readers, SinkManager *transmitter)
     sessionId = "plainrtp";
     utils::infoMsg("Adding plain RTP session...");
     ret |= transmitter->addRTSPConnection(readers, 1, STD_RTP, sessionId);
-    
-    sessionId = "mpegts";
-    utils::infoMsg("Adding plain MPEGTS session...");
-    ret |= transmitter->addRTSPConnection(readers, 2, MPEGTS, sessionId);
+//    
+ //   sessionId = "mpegts";
+ //   utils::infoMsg("Adding plain MPEGTS session...");
+ //   ret |= transmitter->addRTSPConnection(readers, 2, MPEGTS, sessionId);
     
     return ret;
 }
@@ -46,7 +46,7 @@ int main(int argc, char* argv[])
     std::string format = "YUYV";
     int width = 0;
     int height = 0;
-    unsigned fps = 0;
+    unsigned fps = 7;
 
     PipelineManager *pipe;
 
@@ -86,7 +86,7 @@ int main(int argc, char* argv[])
         return 1;
     }
     resampler->configure(0, 0, 0, YUV420P);
-    encoder->configure(4000, 0, 25, 0, 0, 4, true, "superfast");
+    encoder->configure(4000, fps, 1, 0, 1, 1, true, "superfast");
     
     int captureID = 1003;
     int resamplerID = 1001;
@@ -147,6 +147,7 @@ int main(int argc, char* argv[])
 
         ctrl->processRequest();
     }
+
 
     PipelineManager::destroyInstance();
     Controller::destroyInstance();

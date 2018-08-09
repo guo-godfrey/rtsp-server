@@ -29,117 +29,107 @@
 #include <errno.h>
 #include "V4LCapture.hh"
 #include "../../AVFramedQueue.hh"
+#include<opencv2/opencv.hpp>
 
-#define CLEAR(x) memset(&(x), 0, sizeof(x))
 
-static int xioctl(int fh, unsigned long int request, void *arg);
-static PixType pixelType(unsigned pixelFormat);
-static VCodecType codecType(unsigned pixelFormat);
-static unsigned getFormatFromString(std::string format);
-static std::string getStatusAsString(DeviceStatus status);
 
-V4LCapture::V4LCapture() : HeadFilter(1, REGULAR, true), status(CLOSE), forceFormat(true), 
+#include<stdio.h>
+#include<unistd.h>
+#include<sys/socket.h>
+#include<string.h>
+#include<errno.h>
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include<sys/types.h>
+#define SERVER_PORT 9999
+#include <time.h>
+#include <sys/time.h>
+
+
+V4LCapture::V4LCapture() : HeadFilter(1, REGULAR, true), forceFormat(true), 
     frameCount(0), durationCount(std::chrono::microseconds(0))
 {
+	printf("---func(%s)---line(%d)---\n", __FUNCTION__, __LINE__);
     oStreamInfo = new StreamInfo (VIDEO);
     oStreamInfo->video.codec = RAW;
-    oStreamInfo->video.pixelFormat = P_NONE;
+    oStreamInfo->video.pixelFormat = YUV420P;
     
     currentTime = std::chrono::high_resolution_clock::now();
     lastTime = currentTime;
     
-    fType = V4L_CAPTURE;
-    
+    //cap = new cv::VideoCapture("rtsp://admin:a12345678@192.168.1.12/h264/ch1/sub/av_stream");
+    //cap->set(cv::CAP_PROP_BUFFERSIZE, 3);
+
+    //printf("CAP_PROP_BUFFERSIZE=%f---\n", cap->get(cv::CAP_PROP_BUFFERSIZE));
     initializeEventMap();
+
+
+#if 0
+    struct sockaddr_in server_sock;
+    int sockfd = socket(AF_INET,SOCK_STREAM,0);
+    bzero(&server_sock,sizeof(server_sock));
+    server_sock.sin_family=AF_INET;
+    inet_pton(AF_INET, "127.0.0.1", &server_sock.sin_addr);
+    server_sock.sin_port=htons(SERVER_PORT);
+
+    int ret=::connect(sockfd,(struct sockaddr *)&server_sock,sizeof(server_sock));
+    if(ret<0)
+    {
+        printf("connect()\n");
+    }
+    printf("connect success %d\n", sockfd);
+#endif
+
 }
 
 V4LCapture::~V4LCapture()
 {
-    releaseDevice();
+    printf("---func(%s)---line(%d)---\n", __FUNCTION__, __LINE__);
 }
 
 bool V4LCapture::configure(std::string device, unsigned width, unsigned height, unsigned fps, std::string format, bool fFormat)
 {
+	printf("---func(%s)---line(%d)---\n", __FUNCTION__, __LINE__);
     forceFormat = fFormat;
-    switch (status) {
-        case CLOSE:
-            if (!openDevice(device)){
-                return false;
-            }
-        case OPEN:
-            if (!initDevice(width, height, fps, format)){
-                releaseDevice();
-                return false;
-            }
-        case INIT:
-            if (!startCapturing()){
-                releaseDevice();
-                return false;
-            }
-            break;
-        case CAPTURE:
-            if (stopCapturing() && uninitDevice()){
-                return configure(device, width, height, fFormat);
-            }
-            break;
-    }
-    
     frameDuration = std::chrono::microseconds((int)(std::micro::den/fps));
-    
+        struct sockaddr_in server_sock;
+    sockfd = socket(AF_INET,SOCK_STREAM,0);
+    bzero(&server_sock,sizeof(server_sock));
+    server_sock.sin_family=AF_INET;
+    inet_pton(AF_INET, "127.0.0.1", &server_sock.sin_addr);
+    server_sock.sin_port=htons(SERVER_PORT);
+    //setsockopt();
+
+    int ret=::connect(sockfd,(struct sockaddr *)&server_sock,sizeof(server_sock));
+    if(ret<0)
+    {
+        printf("connect()\n");
+    }
+    printf("connect success %d\n", sockfd);
+
     return true;
 }
 
 bool V4LCapture::specificWriterConfig(int /*writerID*/) 
 {
-    if (status == CAPTURE){
-        return true;
-    }
-    
-    utils::warningMsg("The device is not capturing yet! No possible connection");
-    
-    return false;
-};
-
-bool V4LCapture::releaseDevice()
-{
-    switch (status) {
-        case CAPTURE:
-            if (!stopCapturing()){
-                return false;
-            }
-        case INIT:
-            if (!uninitDevice()){
-                return false;
-            }
-        case OPEN:
-            closeDevice();
-        case CLOSE:
-            return true;
-    }
-    
+    printf("---func(%s)---line(%d)---\n", __FUNCTION__, __LINE__);
     return true;
-}
+};
 
 bool V4LCapture::doProcessFrame(std::map<int, Frame*> &dstFrames, int& ret)
 {   
     VideoFrame* frame = dynamic_cast<VideoFrame*> (dstFrames.begin()->second);
-    
-    if (!frame || status != CAPTURE){
-        ret = WAIT;
-        return false;
-    }
-    
     std::chrono::microseconds diff = std::chrono::duration_cast<std::chrono::microseconds>
         (std::chrono::high_resolution_clock::now() - wallclock);
         
     if (std::abs(diff.count()) > frameDuration.count()/TOLERANCE_FACTOR){
-        utils::warningMsg("Resetting wallclock");
+//        utils::warningMsg("Resetting wallclock");
         wallclock = std::chrono::high_resolution_clock::now();
     }
     
     wallclock += frameDuration;
     
-    if (!getFrame(frameDuration, frame)){
+    if (!readFrame(frame)){
         frame->setConsumed(false);
     } else {
         frame->setConsumed(true);
@@ -175,343 +165,53 @@ bool V4LCapture::doProcessFrame(std::map<int, Frame*> &dstFrames, int& ret)
 
 FrameQueue* V4LCapture::allocQueue(ConnectionData cData)
 {
-    if (pixelType(fmt.fmt.pix.pixelformat) == P_NONE){
-        return VideoFrameQueue::createNew(cData, oStreamInfo, DEFAULT_VIDEO_FRAMES);
-    } else {
-        return VideoFrameQueue::createNew(cData, oStreamInfo, DEFAULT_RAW_VIDEO_FRAMES);
-    }
+	printf("---func(%s)---line(%d)---\n", __FUNCTION__, __LINE__);
+	return VideoFrameQueue::createNew(cData, oStreamInfo, DEFAULT_RAW_VIDEO_FRAMES);
 }
 
-const bool V4LCapture::getFrame(std::chrono::microseconds timeout, VideoFrame *dstFrame)
-{
-    fd_set fds;
-    struct timeval tv;
-    int ret;
-
-    FD_ZERO(&fds);
-    FD_SET(fd, &fds);
-
-    tv.tv_sec = timeout.count()/std::micro::den;
-    tv.tv_usec = timeout.count()%std::micro::den;
-
-    ret = select(fd + 1, &fds, NULL, NULL, &tv);
-
-    if (ret < 0) {
-        utils::errorMsg("Select error");
-        return false;
-    }
-
-    if (ret == 0) {
-        utils::warningMsg("Select timeout");
-        return false;
-    }
-
-    return readFrame(dstFrame);
-}
 
 bool V4LCapture::readFrame(VideoFrame *dstFrame)
 {
+#if 0
+    if (cap == NULL)
+        printf( "Video capture is NUKK\n");
+    cv::Mat frame;
+    cap->read(frame);
 
-    struct v4l2_buffer buf;
+    if(frame.type() == CV_8UC3) {
+        //alignFce2(frame);
+        cv::Mat yuvImg;
+        cv::cvtColor(frame, yuvImg, CV_BGR2YUV_I420);
+	//cv::resize(yuvImg, yuvImg, cv::Size(),0.5,0.5);
 
-    CLEAR(buf);
+        memcpy(dstFrame->getDataBuf(), yuvImg.data, 
+               yuvImg.rows * yuvImg.cols);
 
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
-
-    if (xioctl(fd, VIDIOC_DQBUF, &buf) < 0) {
-        return false;
+        dstFrame->setSize(640, 480);
+        dstFrame->setPixelFormat(YUV420P);
     }
-    
-    memcpy(dstFrame->getDataBuf(), buffers[buf.index].data, 
-               fmt.fmt.pix.height * fmt.fmt.pix.bytesperline);
-    dstFrame->setSize(fmt.fmt.pix.width, fmt.fmt.pix.height);
-    dstFrame->setPixelFormat(oStreamInfo->video.pixelFormat);
-    
-    if (xioctl(fd, VIDIOC_QBUF, &buf) < 0){
-        return false;
-    }
+    else
+	    printf("NOooooooooo CV_8UC3, %d\n", cap->isOpened ());
+#endif
 
-    return true;
-}
-
-bool V4LCapture::openDevice(std::string device)
-{
-      struct stat st;
-      if (status != CLOSE){
-          return false;
-      }
-
-      if (stat(device.c_str(), &st) < 0) {
-          utils::errorMsg("Cannot find or identify " + device);
-          return false;
-      }
-
-      if (!S_ISCHR(st.st_mode)) {
-            utils::errorMsg(device + " is no device");
-            return false;
-      }
-
-      fd = open(device.c_str(), O_RDWR | O_NONBLOCK, 0);
-
-      if (fd < 0) {
-            utils::errorMsg("Cannot open " + device);
-            return false;
-      }
-      
-      status = OPEN;
-      return true;
-}
-
-bool V4LCapture::init_mmap(void)
-{
-      struct v4l2_requestbuffers req;
-
-      CLEAR(req);
-
-      req.count = 4;
-      req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-      req.memory = V4L2_MEMORY_MMAP;
-
-      if (xioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
-          utils::errorMsg("Failed requesting v4l buffers");
-          return false;
-      }
-
-      if (req.count < 2) {
-          utils::errorMsg("Insuficient memory on ");
-          return false;
-      }
-
-      buffers = (buffer*) calloc(req.count, sizeof(*buffers));
-
-      if (!buffers) {
-          utils::errorMsg("Out of memory");
-          return false;
-      }
-
-      for (n_buffers = 0; n_buffers < req.count; ++n_buffers) {
-            struct v4l2_buffer buf;
-
-            CLEAR(buf);
-
-            buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-            buf.memory      = V4L2_MEMORY_MMAP;
-            buf.index       = n_buffers;
-
-            if (xioctl(fd, VIDIOC_QUERYBUF, &buf) < 0){
-                utils::errorMsg("Failed requesting v4l buffers");
-                return false;
-            }
-
-            buffers[n_buffers].size = buf.length;
-            buffers[n_buffers].data =
-                  mmap(NULL,
-                        buf.length,
-                        PROT_READ | PROT_WRITE,
-                        MAP_SHARED,
-                        fd, buf.m.offset);
-
-            if (MAP_FAILED == buffers[n_buffers].data){
-                  utils::errorMsg("Mmap failed");
-                  return false;
-            }
-      }
-      
-      return true;
-}
-
-void V4LCapture::closeDevice(void)
-{
-    if (status != OPEN){
-        return;
-    }
-    if (close(fd) < 0){
-        utils::errorMsg("Failed closing file descriptor");
-    }
-    fd = -1;
-    status = CLOSE;
-}
-
-bool V4LCapture::initDevice(unsigned& xres, unsigned& yres, unsigned& den, std::string &format)
-{
-    struct v4l2_capability cap;
-    struct v4l2_cropcap cropcap;
-    struct v4l2_crop crop;
-    struct v4l2_streamparm fps;
-    
-    if (status != OPEN){
-        return false;
-    }
-    
-    if (xioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
-        utils::errorMsg("Device might not be V4L2 compatible");
-        return false;
+    int needRcv = 921600; //640*480*3/2;
+    unsigned char *buf = dstFrame->getDataBuf();
+    char prebuf[4]= {0x11,0x22,0x33,0x44};
+    int ret = write(sockfd, prebuf, 4);
+    if (ret != 4) {
+	    printf("request failed");
+	    return false;
     }
 
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
-        utils::errorMsg("Device is no video capture device");
-        return false;
+    while(needRcv > 0){
+        //printf("start capture---(%d)%d\n", needRcv, sockfd);
+        ret = read(sockfd, buf, needRcv);
+        buf += ret;
+        needRcv -= ret;
     }
 
-    if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
-        utils::errorMsg("Device does not support streaming i/o");
-        return false;
-    }
-
-    CLEAR(cropcap);
-
-    cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-
-    if (0 == xioctl(fd, VIDIOC_CROPCAP, &cropcap)) {
-        crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        crop.c = cropcap.defrect; 
-        
-        xioctl(fd, VIDIOC_S_CROP, &crop);
-    }
-    
-    CLEAR(fmt);
-
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    
-    if (forceFormat) {
-        fmt.fmt.pix.width       = xres;
-        fmt.fmt.pix.height      = yres;
-        fmt.fmt.pix.pixelformat = getFormatFromString(format);
-        fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
-        
-        if (xioctl(fd, VIDIOC_S_FMT, &fmt) < 0){
-            utils::errorMsg("Error setting format");
-            return false;
-        }
-
-        if (fmt.fmt.pix.pixelformat != V4L2_PIX_FMT_YUYV){
-            utils::warningMsg("Webcam does not support YUYV format!");
-        }
-
-        if (fmt.fmt.pix.width != xres || fmt.fmt.pix.height != yres){
-            utils::warningMsg("Requested resolution could not be set, is set to: \n\t\t" 
-                + std::to_string(fmt.fmt.pix.width) + " xres\n\t\t"
-                + std::to_string(fmt.fmt.pix.height) + " yres");
-            xres = fmt.fmt.pix.width;
-            yres = fmt.fmt.pix.height;
-        }
-        
-        if (fmt.fmt.pix.pixelformat != getFormatFromString(format)){
-            if (pixelType(fmt.fmt.pix.pixelformat) != P_NONE){
-                format = utils::getPixTypeAsString(pixelType(fmt.fmt.pix.pixelformat));
-            } else {
-                format = utils::getVideoCodecAsString(codecType(fmt.fmt.pix.pixelformat));
-            }
-            utils::warningMsg("Could not set pixel format, set to " + format);
-        }
-        
-    } else {    
-        if (xioctl(fd, VIDIOC_G_FMT, &fmt) < 0){
-            utils::errorMsg("Error setting format");
-            return false;
-        }
-    }
-    
-    oStreamInfo->video.pixelFormat = pixelType(fmt.fmt.pix.pixelformat);
-    if (oStreamInfo->video.pixelFormat == P_NONE){
-        oStreamInfo->video.codec = codecType(fmt.fmt.pix.pixelformat);
-    }
-    
-    CLEAR(fps);
-    fps.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    
-    fps.parm.capture.capturemode |= V4L2_CAP_TIMEPERFRAME;
-    fps.parm.capture.timeperframe.numerator = 1;
-    fps.parm.capture.timeperframe.denominator = den;
-    if (xioctl(fd, VIDIOC_S_PARM, &fps) < 0) {
-        utils::errorMsg("Error setting fps!");
-        return false;
-    }
-    
-    if (fps.parm.capture.timeperframe.denominator != den){
-        utils::warningMsg("Couldn't set fps to " + std::to_string(den) + ". Set to " 
-            + std::to_string(fps.parm.capture.timeperframe.denominator));
-        den = fps.parm.capture.timeperframe.denominator;
-    }
-
-    if (!init_mmap()){
-        return false;
-    }
-    
-    status = INIT;
-    
-    return true;
-}
-
-bool V4LCapture::uninitDevice(void)
-{
-    if (status != INIT){
-        return false;
-    }
-
-    for (unsigned i = 0; i < n_buffers; ++i){
-        if (munmap(buffers[i].data, buffers[i].size) < 0){
-            utils::errorMsg("Failed unmapping buffers!");
-            return false;
-        }
-    }
-
-    CLEAR(fmt);
-    free(buffers);
-    status = OPEN;
-    return true;
-}
-
-bool V4LCapture::startCapturing(void)
-{
-    enum v4l2_buf_type type;
-    
-    if (status != INIT){
-        return false;
-    }
-
-    for (unsigned i = 0; i < n_buffers; ++i) {
-        struct v4l2_buffer buf;
-
-        CLEAR(buf);
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-
-        if (xioctl(fd, VIDIOC_QBUF, &buf) < 0){
-            utils::errorMsg("VIDIOC_QBUF error");
-            return false;
-        }
-    }
-    
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (xioctl(fd, VIDIOC_STREAMON, &type) < 0){
-        utils::errorMsg("VIDIOC_STREAMON error");
-        return false;
-    }
-    
-    status = CAPTURE;
-    
-    return true;
-}
-
-bool V4LCapture::stopCapturing(void)
-{
-    enum v4l2_buf_type type;
-    
-    if (status != CAPTURE){
-        return false;
-    }
-
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (xioctl(fd, VIDIOC_STREAMOFF, &type) < 0){
-        utils::errorMsg("VIDIOC_STREAMOFF");
-        return false;
-    }
-    
-    status = INIT;
-    
+    dstFrame->setSize(640 * 2, 480);
+    dstFrame->setPixelFormat(YUV420P);
     return true;
 }
 
@@ -532,21 +232,13 @@ int V4LCapture::getAvgFrameDuration(std::chrono::microseconds duration)
 
 void V4LCapture::doGetState(Jzon::Object &filterNode)
 {
-    filterNode.Add("status", getStatusAsString(status));
+    filterNode.Add("status", "capture");
     
-    if (status == CAPTURE){
-        filterNode.Add("device", device);
-        filterNode.Add("width", (int) fmt.fmt.pix.width);
-        filterNode.Add("height", (int) fmt.fmt.pix.height);
-        filterNode.Add("fps", (int) (std::micro::den/frameDuration.count()));
-        if (pixelType(fmt.fmt.pix.pixelformat) != P_NONE){
-            filterNode.Add("format", utils::getPixTypeAsString(pixelType(fmt.fmt.pix.pixelformat)));
-        } else if (codecType(fmt.fmt.pix.pixelformat) != VC_NONE){
-            filterNode.Add("format", utils::getVideoCodecAsString(codecType(fmt.fmt.pix.pixelformat)));
-        } else {
-            filterNode.Add("format","unknown format");
-        }
-    }
+    filterNode.Add("device", device);
+    filterNode.Add("width", (int) 1920);
+    filterNode.Add("height", (int) 1080);
+    filterNode.Add("fps", (int) (std::micro::den/frameDuration.count()));
+    filterNode.Add("format", utils::getPixTypeAsString(YUV420P));
 }
 
 bool V4LCapture::configureEvent(Jzon::Node* params)
@@ -574,106 +266,6 @@ bool V4LCapture::configureEvent(Jzon::Node* params)
 
 void V4LCapture::initializeEventMap()
 {
+	printf("---func(%s)---line(%d)---\n", __FUNCTION__, __LINE__);
     eventMap["configure"] = std::bind(&V4LCapture::configureEvent, this, std::placeholders::_1);
-}
-
-static int xioctl(int fh, unsigned long int request, void *arg)
-{
-      int r;
-      do {
-            r = ioctl(fh, request, arg);
-      } while (-1 == r && EINTR == errno);
-
-      return r;
-}
-
-static PixType pixelType(unsigned pixelFormat)
-{
-    switch(pixelFormat){
-        case V4L2_PIX_FMT_YUYV:
-            return YUYV422;
-            break;
-        case V4L2_PIX_FMT_YUV420:
-            return YUV420P;
-            break;
-        case V4L2_PIX_FMT_RGB24:
-            return RGB24;
-            break;
-        default:
-            utils::warningMsg("Unknown pixelFormat!");
-            return P_NONE;
-            break;
-    }
-}
-
-static VCodecType codecType(unsigned pixelFormat)
-{
-    switch(pixelFormat){
-        case V4L2_PIX_FMT_H264:
-            return H264;
-            break;
-        case V4L2_PIX_FMT_MJPEG:
-            return MJPEG;
-            break;
-        default:
-            utils::warningMsg("Unknown codec!");
-            return VC_NONE;
-            break;
-    }
-}
-
-static unsigned getFormatFromString(std::string format)
-{
-    PixType pix = utils::getPixTypeFromString(format);
-    switch (pix){
-        case YUYV422:
-            return V4L2_PIX_FMT_YUYV;
-            break;
-        case YUV420P:
-            return V4L2_PIX_FMT_YUV420;
-            break;
-        case YUV422P:
-            return V4L2_PIX_FMT_YUV422P;
-            break;
-        case RGB24:
-            return V4L2_PIX_FMT_RGB24;
-            break;
-        default:
-            utils::warningMsg("Unknown pixel format, is it compressed?");
-            break;
-    }
-    VCodecType codec =  utils::getVideoCodecFromString(format);
-    switch (codec){
-        case H264:
-            return V4L2_PIX_FMT_H264;
-            break;
-        case MJPEG:
-            return V4L2_PIX_FMT_MJPEG;
-            break;
-        default:
-            utils::warningMsg("Unknown codec format");
-            //default format
-            return V4L2_PIX_FMT_YUYV; 
-            break;
-    }
-}
-
-static std::string getStatusAsString(DeviceStatus status)
-{
-    switch (status){
-        case OPEN:
-            return "open";
-            break;
-        case INIT:
-            return "init";
-            break;
-        case CAPTURE:
-            return "capture";
-            break;
-        case CLOSE:
-            return "close";
-            break;
-    }
-    
-    return "unknown";
 }

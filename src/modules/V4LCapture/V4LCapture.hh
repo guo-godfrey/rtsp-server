@@ -26,6 +26,7 @@
 
 #include <string>
 #include <chrono>
+#include <opencv2/opencv.hpp>
 #include <linux/videodev2.h>
 
 #include "../../Utils.hh"
@@ -65,17 +66,16 @@ private:
     
     const bool getFrame(std::chrono::microseconds timeout, VideoFrame *dstFrame);
     
-    bool init_mmap();
+    //bool init_mmap();
 
-    bool openDevice(std::string device);
-    void closeDevice();
+    //bool openDevice(std::string device);
+    //void closeDevice();
 
-    bool initDevice(unsigned& xres, unsigned& yres, unsigned &den, std::string &format);
-    bool uninitDevice();
+    //bool initDevice(unsigned& xres, unsigned& yres, unsigned &den, std::string &format);
+    //bool uninitDevice();
 
-    bool startCapturing();
-    bool stopCapturing();
-
+    //bool startCapturing();
+    //bool stopCapturing();
     bool readFrame(VideoFrame* dstFrame);
     
     int getAvgFrameDuration(std::chrono::microseconds duration);
@@ -84,17 +84,19 @@ private:
     
     std::string device;
     
-    struct v4l2_format fmt;
-    DeviceStatus status;
+    //struct v4l2_format fmt;
+    //DeviceStatus status;
     
-    int fd;
+    int sockfd;
 
-    struct buffer   *buffers;
-    unsigned        n_buffers;
+    //struct buffer   *buffers;
+    //unsigned        n_buffers;
 
     bool forceFormat;
+    cv::VideoCapture *cap;
     
     unsigned frameCount;
+    
     
     std::chrono::microseconds frameDuration;
     std::chrono::microseconds durationCount;

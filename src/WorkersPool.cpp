@@ -24,7 +24,7 @@
 #include "WorkersPool.hh"
 #include "Utils.hh"
 
-#define HW_CONC_FACTOR 2
+#define HW_CONC_FACTOR 1
 
 TaskQueue::TaskQueue(){
     iter = queue.begin();
